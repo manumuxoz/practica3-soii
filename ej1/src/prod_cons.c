@@ -6,7 +6,6 @@
 #include <pthread.h>    // hilos
 #include <semaphore.h>  // semaforos
 #include <time.h>
-#include "compartido.h"
 
 // productor y consumidor son dos hilos dentro del mismo proceso
 // al compartir el espacio de direcciones la estructura compartida
@@ -14,6 +13,8 @@
 // compartida para mapear en memoria)
 // emplearemos semaforos anonimos POSIX (sem_init/sem_destroy) ya que
 // no es necesario idetificarlos en el kernel (seran variables globales)
+
+#define N 10 // tamaño del buffer
 
 // estructura de argumentos para los hilos
 // pthread_create solo permite pasar un unico putero void* para cada hilo
@@ -24,13 +25,16 @@ typedef struct
     int count_vocales[5]; // contador de vocales
 } args_hilo;
 
+// estructura FIFO que se guardara en la memoria compartida
+typedef struct {
+    char buffer[N];
+    int inicio;   
+    int fin;
+    int prod_fin; // bandera para avisar al consumidor que el productor termino
+} compartido;
+
 // variables globales compartidas entre los dos hilos
 compartido comp; // buffer compartido
-
-// semaforos anonimos
-sem_t mutex; // garantiza exclusion mutua sobre el buffer
-sem_t vacias; // cuenta posiciones libres
-sem_t llenas; // cuenta posiciones ocupadas
 
 // prototipos
 
@@ -58,26 +62,10 @@ int main(int argc, char **argv)
     }
 
     // inicializamos la estructura compartida
-    comp.top = 0;
+    comp.inicio = 0;
+    comp.fin = N; 
     comp.prod_fin = 0;
     memset(comp.buffer, 0, sizeof(comp.buffer));
-
-    // inicializamos los semaforos anonimos:
-    // sem_init(sem, pshared, valor)
-    // pshared 0 el semaforo es local al proceso(compartido entre hilos)
-    // pshared 1 compartido entre procesos mediante memoria compartida
-    // (caso sem_open)
-    // usamos pshared 0 porque aqui los consumidores del semaforo son
-    // hilos del mismo proceso, no procesos distintos
-    if (
-        sem_init(&mutex, 0, 1) || // region critica libre al inicio
-        sem_init(&vacias, 0, N) || // buffer vacio (N huecos libres)
-        sem_init(&llenas, 0, 0) // ningun elemento producido todavia
-    )
-    {
-        perror("Error sem_init");
-        exit(1);
-    }
 
     // creamos los hilos
     // preparamos los argumentos para cada hilo en structs separadas
@@ -124,14 +112,6 @@ int main(int argc, char **argv)
     printf("  u: %d\n", args_cons.count_vocales[4]);
 
     // limpiamos recursos
-    // sem_destroy libera los recursos del semaforo anonimo
-    // no hace falta sem_unlink porque estos semaforos no tienen nombre
-    // en el kernel (desaparecen solos cuando el proceso termina)
-    // aun asi los destruimos explicitamente
-    sem_destroy(&mutex);
-    sem_destroy(&vacias);
-    sem_destroy(&llenas);
-
     fclose(ftexto);
 
     exit(0);
