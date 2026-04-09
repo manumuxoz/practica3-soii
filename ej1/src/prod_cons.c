@@ -22,14 +22,14 @@
 typedef struct
 {
     FILE *ftexto; // archivo de texto (para el hilo productor)
-    int count_vocales[5]; // contador de vocales
+    int suma; // suma acumulada de enteros
 } args_hilo;
 
 // estructura FIFO que se guardara en la memoria compartida
 typedef struct {
-    char buffer[N];
-    int inicio;   
-    int fin;
+    int buffer[N];
+    int inicio; // indice inicio de la cola
+    int fin; // indice final de la cola
     int prod_fin; // bandera para avisar al consumidor que el productor termino
 } compartido;
 
@@ -40,16 +40,17 @@ compartido comp; // buffer compartido
 
 void *hilo_productor(void *arg);
 void *hilo_consumidor(void *arg);
-char produce_item(FILE *f, int count_vocales[5]);
-void insert_item(char c);
-char remove_item(void);
-void consume_item(char c, int count_vocales[5]);
+int produce_item(FILE *f, int *suma);
+void insert_item(int n);
+int remove_item(void);
+void consume_item(int item, int *suma_consumida);
 
+// programa principal
 int main(int argc, char **argv)
 {
     if (argc != 2) // comprobamos parametros
     {
-        fprintf(stderr, "Uso: %s <archivo_texto>\n", argv[0]);
+        fprintf(stderr, "Uso: %s <archivo_enteros>\n", argv[0]);
         exit(1);
     }
 
@@ -62,8 +63,7 @@ int main(int argc, char **argv)
     }
 
     // inicializamos la estructura compartida
-    comp.inicio = 0;
-    comp.fin = N; 
+    comp.fin = 0; 
     comp.prod_fin = 0;
     memset(comp.buffer, 0, sizeof(comp.buffer));
 
@@ -73,8 +73,8 @@ int main(int argc, char **argv)
     // una carrera critica sobre count_vocales
     args_hilo args_prod = { .ftexto = ftexto };
     args_hilo args_cons = { .ftexto = NULL };
-    memset(args_prod.count_vocales, 0, sizeof(args_prod.count_vocales));
-    memset(args_cons.count_vocales, 0, sizeof(args_cons.count_vocales));
+    memset(&args_prod.suma, 0, sizeof(args_prod.suma));
+    memset(&args_cons.suma, 0, sizeof(args_cons.suma));
     
     pthread_t tid_prod, tid_cons; //ids
 
@@ -97,19 +97,9 @@ int main(int argc, char **argv)
     pthread_join(tid_cons, NULL);
 
     // imprimimos los resultados
-    printf("[PROD] Vocales leidas del archivo:\n");
-    printf("  a: %d\n", args_prod.count_vocales[0]);
-    printf("  e: %d\n", args_prod.count_vocales[1]);
-    printf("  i: %d\n", args_prod.count_vocales[2]);
-    printf("  o: %d\n", args_prod.count_vocales[3]);
-    printf("  u: %d\n", args_prod.count_vocales[4]);
+    printf("[PROD] Suma acumulada: %d\n", args_prod.suma);
  
-    printf("[CONS] Vocales consumidas del buffer:\n");
-    printf("  a: %d\n", args_cons.count_vocales[0]);
-    printf("  e: %d\n", args_cons.count_vocales[1]);
-    printf("  i: %d\n", args_cons.count_vocales[2]);
-    printf("  o: %d\n", args_cons.count_vocales[3]);
-    printf("  u: %d\n", args_cons.count_vocales[4]);
+    printf("[CONS] Suma acumulada: %d\n", args_cons.suma);
 
     // limpiamos recursos
     fclose(ftexto);
@@ -120,65 +110,31 @@ int main(int argc, char **argv)
 // hilo productor
 // funcion que ejecuta el hilo productor
 // recibe un void * que casteamos a args_hilo* para acceder al archivo
-// de texto y al contador de vocales
+// de texto y a la suma acumulada
 // realiza ITERACIONES ciclos y luego activa prod_fin para avisar al consumidor
 void *hilo_productor(void *arg)
 {
     args_hilo *a = (args_hilo *)arg;
 
-    // semilla para los sleeps aleatorios de las ultimas iteraciones
-    srand((unsigned int)time(NULL));
-
-    for (int i = 0; i < ITERACIONES; i++)
-    {
+    while(1) {
         // producimos el item fuera de la region critica
-        // produce_item no accede al buffer (solo lee del archivo que
-        // es privado del productor por lo que no necesita proteccion)
-        char item = produce_item(a->ftexto, a->count_vocales);
+        // produce_item no accede al buffer
+        int item = produce_item(a->ftexto, &a->suma);
 
-        // si llegamos al EOF antes de completar las iteraciones rebobinamos
-        if (item == '\0')
-        {
-            rewind(a->ftexto);
-            item = produce_item(a->ftexto, a->count_vocales);
-        }
+        // si item es -1 significa que hemos llegado al fin del archivo por
+        // lo tanto salimos del bucle
+        if (item == -1)
+            break;
 
-        // sleep fuera de la region critica para controlar la velocidad
-        // iteraciones 0-29 el buffer tiene que llenarse (productor rapido)
-        // iteraciones 30-59 el consumidor vacia el buffer (productor lento)
-        // iteraciones 60-79 velocidad aleatoria entre 0-3s 
-        if (i < 30)
-            sleep(0);
-        else if (i < 60)
+        while (comp.fin == N) // realizamos espera activa
         {
-            printf("[PROD] Voy lento (Iter %d). Esperando 2s...\n", i + 1);
-            sleep(2);
+            printf("[PROD] Buffer lleno en el productor (%d/%d). Esperando...\n", comp.fin, N);
+            sleep(1);
         }
-        else
-        {
-            int t = rand() % 4;
-            printf("[PROD] Sleep aleatorio (Iter %d). Esperando %ds...\n", i + 1, t);
-            sleep(t);
-        }
-
+        
         // region critica
 
-        // se bloquea si no hay huecos libres en el buffer
-        // cuando se desbloquea decrementa vacias en 1 (reserva un hueco)
-        sem_wait(&vacias);
-
-        // garantiza que solo un hilo este en la seccion critica a la vez
-        // si el consumidor ya esta dentro esperamos
-        sem_wait(&mutex);
-
         insert_item(item); // acceso exclusivo al buffer
-
-        sem_post(&mutex); // liberamos la exclusion mutua
-
-        // incrementa llenas en 1 indicando que hay un nuevo elemento
-        // disponible si el consumidor estaba bloqueado en sem_wait(&llenas)
-        // esto lo despierta
-        sem_post(&llenas);
 
         // fin de la region critica
     }
@@ -203,115 +159,139 @@ void *hilo_consumidor(void *arg)
     // semilla distinta a la del productor para los sleeps alaeatorios
     srand((unsigned int)time(NULL)^(unsigned int)pthread_self());
 
-    for (int i = 0; i < ITERACIONES; i++)
+    while(!comp.prod_fin) // ejecutamos en bucle mientras el productor no haya terminado de leer el archivo
     {
+        while (comp.fin == 0) // espera activa
+        {
+            printf("[CONS] Buffer vacio. Esperando...\n");
+            sleep(1);
+        }
+
         // region critica
-
-        // se bloquea si el buffer esta vacio
-        // cuando se desbloquea decrementa llenas en 1
-        sem_wait(&llenas);
-
-        sem_wait(&mutex); // exclusion mutua sobre el buffer
-
-        char item = remove_item();
-
-        sem_post(&mutex); // liberamos la exclusion mutua
-
-        // un hueco ha quedado libre si el productor estaba
-        // bloqueado esperando espacio esto lo despierta
-        sem_post(&vacias);
+        int item = remove_item();
         // fin de la region critica
 
         // procesamos el item fuera de la region critica
-        consume_item(item, a->count_vocales);
-
-        // sleep fuera de la region critica para controlar la velocidad
-        // iteraciones 0-29 el buffer tiene que llenarse (consumidor lento)
-        // iteracions 30-59 el buffer tiene que vaciarse (consumidor rapido)
-        // iteraciones 60-79 velocidades aleatorias entre 0-3s
-        if (i < 30)
-        {
-            printf("[CONS] Voy lento (Iter %d). Esperando 2s...\n", i + 1);
-            sleep(2);
-        }
-        else if (i < 60)
-            sleep(0);
-        else
-        {
-            int t = rand() % 4;
-            printf("[CONS] Sleep aleatorio (Iter %d). Esperando %ds...\n", i + 1, t);
-            sleep(t);
-        }
+        consume_item(item, &a->suma);
     }
  
     printf("[CONS] Terminado.\n");
     return NULL;
 }
 
-// funcion que lee un unico caracter del archivo y actualiza el contador de vocales
+// funcion que lee un unico entero del archivo y actualiza la suma acumulada
 // del productor
-// devuelve \0 al llegar al EOF
-// no accede al buffer compartido (no necesita proteccion con semaforos)
-char produce_item(FILE *f, int count_vocales[5])
+// fscanf ignora automaticamente los espacios en blanco, saltos de línea o tabulaciones
+// devuelve -1 al llegar al EOF
+// no accede al buffer compartido
+int produce_item(FILE *f, int *suma)
 {
-    int c = fgetc(f);
-    if (c == EOF)
-        return '\0';
+    int numero_leido;
 
-    char lc = tolower((char)c);
-    if      (lc == 'a') count_vocales[0]++;
-    else if (lc == 'e') count_vocales[1]++;
-    else if (lc == 'i') count_vocales[2]++;
-    else if (lc == 'o') count_vocales[3]++;
-    else if (lc == 'u') count_vocales[4]++;
- 
-    return (char)c;
+    // fscanf intenta leer un entero. Si devuelve 1, la lectura fue exitosa.
+    if(fscanf(f, "%d", &numero_leido) == 1){
+        *suma += numero_leido;
+
+        // Imprimimos el valor procesado para seguimiento
+        printf("Producido: %d | Suma acumulada: %d\n", numero_leido, *suma);
+
+        return numero_leido;
+    }
+
+    // si se llega al final del archivo se devuelve -1
+    return -1;
 }
 
-// funcion que inserta el caracter en la cima de la pila LIFO
+// funcion que inserta el entero en el final de estructura FIFO
 // siempre se llama dentro de la region critica por lo que el acceso
 // a comp es seguro
-void insert_item(char c)
+void insert_item(int n)
 {
-    if (comp.top < N)
+    if (comp.fin < N)
     {
-        comp.buffer[comp.top] = c;
-        comp.top++;
-        printf("[PROD] Insertado '%c'. Top: %d\n", c, comp.top);
+        // inicio de la region critica
+        
+        // almacenamos temporalmente el valor actual de top
+        int fin_actual = comp.fin; // leeemos final
+
+        // forzamos que el proceso se duerma para aumentar 
+        // la probabilidad de carrera critica
+        // si el consumidor ejecuta remove_item()
+        // decrementara comp->top
+        // cuando el productor retome, escribira en comp->buffer[comp->top]
+        // (diferente al top_actual) y luego fijara top = top_actual + 1
+        // corrompiendo el indice y sobreescribiendo una posicion incorrecta
+        sleep(1); // forzamos carrera
+
+        comp.buffer[comp.fin] = n;
+         
+        // comprobamos que el indice no se salga del buffer
+        if (fin_actual < N - 1) 
+            comp.fin = fin_actual + 1; // actualizamos final
+        else
+            comp.fin = 0;
+
+        // fin de la region critica
+        printf("[PROD] Insertado '%d'. Inicio: %d | Fin: %d\n", n, comp.inicio, comp.fin);
     }
 }
 
-// funcion que retira el elemento de la cima de la pila LIFO y lo 
-// reemplaza por -
-// siempre se llama dentt¡ro de la region critica igual que insert_item
-char remove_item(void)
+// funcion que retira el elemento del principio de la cola FIFO y lo 
+// reemplaza por 0
+// siempre se llama dentro de la region critica igual que insert_item
+int remove_item(void)
 {
-    char c = '\0';
+    int n;
 
-    if (comp.top > 0)
+    if (comp.fin > 0)
     {
-        int top_actual = comp.top - 1;
-        c = comp.buffer[top_actual];
-        comp.buffer[top_actual] = '-';
-        comp.top = top_actual;
-        printf("[CONS] Eliminado '%c'. Top: %d\n", c, comp.top);
+        // inicio de la región critica
+
+        int fin_actual;
+
+        // comprobamos que el indice se mantenga en el rango de indices del buffer
+        if (comp.fin > 0)
+            fin_actual = comp.fin - 1; // el ultimo elemento insertado esta en fin - 1
+        else
+            fin_actual = 9;
+
+        n = comp.buffer[comp.inicio]; // leeemos el elemento
+
+        // forzamos que el proceso se duerma para aumentar 
+        // la probabilidad de una carrera critica
+        // si el prodictor inserta un nuevo elemnto incrementara
+        // comp.fin
+        // cuando el consumidor retome la ejecucion fijara 
+        // comp.fin = fin_actual borrando efectivamente el elemento
+        // recien insertado (perdiendo el dato)
+        sleep(1);
+
+        comp.buffer[comp.inicio] = 0; // sustituimos el entero por 0
+
+        // comprobamos que el indice no se salga del buffer
+        if (comp.inicio < N - 1)
+            comp.inicio++; // incrementamos inicio
+        else
+            comp.inicio = 0;
+
+        comp.fin = fin_actual; // decrementamos el top
+
+        // fin de la region critica
+
+        printf("[CONS] Eliminado '%d'. Inicio: %d | Fin: %d\n", n, comp.inicio, comp.fin);
     }
 
-    return c;
+    return n;
 }
 
-// funcion que actualiza el contador de vocales del consumidor con el
-// caracter retirado
-// no accede al buffer compartido (no necesita proteccion con semaforos)
-void consume_item(char c, int count_vocales[5])
+// funcion que actualiza el suma acumulada del consumidor con el
+// item retirado
+// no accede al buffer compartido 
+void consume_item(int item, int *suma_consumida)
 {
-    if (c == '\0' || c == '-')
-        return;
- 
-    c = tolower(c);
-    if      (c == 'a') count_vocales[0]++;
-    else if (c == 'e') count_vocales[1]++;
-    else if (c == 'i') count_vocales[2]++;
-    else if (c == 'o') count_vocales[3]++;
-    else if (c == 'u') count_vocales[4]++;
+    // Sumamos el entero recibido al acumulador del consumidor
+    *suma_consumida += item;
+    
+    // Imprimimos el valor procesado para seguimiento
+    printf("Consumido: %d | Suma acumulada: %d\n", item, *suma_consumida);
 }
