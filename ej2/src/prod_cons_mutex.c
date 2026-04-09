@@ -168,7 +168,7 @@ void *hilo_productor(void *arg)
         while(comp.tam == N) // buffer lleno
         {
             pthread_cond_wait(&condp, &mut);
-            printf("[PROD] Buffer lleno en el productor. Esperando...\n");
+            printf("[PROD] Buffer lleno en el productor (%d/%d). Esperando...\n", comp.tam, N);
         }
     
         insert_item(item); // acceso al buffer
@@ -275,7 +275,6 @@ void insert_item(int n)
     comp.tam++; // aumentamos tamaño de la cola
 
     printf("[PROD] Insertado '%d'. Inicio: %d | Fin: %d | Longitud: %d\n", n, comp.inicio, comp.fin, comp.tam);
-    imprimir_buffer();
 }
 
 // funcion que retira el elemento del principio de la cola FIFO y lo
@@ -294,7 +293,6 @@ int remove_item(void)
 
     // fin de la region critica
     printf("[CONS] Eliminado '%d'. Inicio: %d | Fin: %d | Longitud: %d\n", n, comp.inicio, comp.fin, comp.tam);
-    imprimir_buffer();
 
     return n;
 }
@@ -309,12 +307,4 @@ void consume_item(int item, int *suma_consumida)
 
     // Imprimimos el valor procesado para seguimiento
     printf("Consumido: %d | Suma acumulada: %d\n", item, *suma_consumida);
-}
-
-void imprimir_buffer(void)
-{
-    printf("Buffer: [ ");
-    for (int i = 0; i < N; i++)
-        printf("%2d ", comp.buffer[i]);
-    printf("]\n");
 }

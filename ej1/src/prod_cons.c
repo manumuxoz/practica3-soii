@@ -130,7 +130,7 @@ void *hilo_productor(void *arg)
 
         while (comp.tam == N) // realizamos espera activa
         {
-            printf("[PROD] Buffer lleno en el productor (%d/%d). Esperando...\n", comp.fin, N);
+            printf("[PROD] Buffer lleno en el productor (%d/%d). Esperando...\n", comp.tam, N);
             sleep(1);
         }
 
@@ -160,7 +160,7 @@ void *hilo_consumidor(void *arg)
 
     // ejecutamos en bucle mientras el productor no haya terminado de leer el archivo
     // o haya elementos en el buffer
-    while (!comp.prod_fin || comp.inicio != comp.fin)
+    while (!comp.prod_fin || comp.tam > 0)
     {
         while (comp.tam == 0) // espera activa
         {
@@ -223,6 +223,8 @@ void insert_item(int n)
     // calculamos el indice en aritmetica modular para que no se salga del buffer
     comp.fin = (fin_actual + 1) % N;
 
+    int tam_actual = comp.tam; // rompemos la actualizacion de la longitud
+
     // forzamos que el proceso se duerma para aumentar
     // la probabilidad de carrera critica
     // si el consumidor ejecuta remove_item()
@@ -232,12 +234,11 @@ void insert_item(int n)
     // corrompiendo el indice y sobreescribiendo una posicion incorrecta
     sleep(1); // forzamos carrera
 
-    comp.buffer[fin_actual] = n;
-    comp.tam++; // aumentamos tamaño de la cola
+    comp.tam = tam_actual + 1; // aumentamos tamaño de la cola
+    comp.buffer[fin_actual] = n; // escribimos el dato
 
     // fin de la region critica
     printf("[PROD] Insertado '%d'. Inicio: %d | Fin: %d | Longitud: %d\n", n, comp.inicio, comp.fin, comp.tam);
-    imprimir_buffer();
 }
 
 // funcion que retira el elemento del principio de la cola FIFO y lo
@@ -245,14 +246,14 @@ void insert_item(int n)
 // siempre se llama dentro de la region critica igual que insert_item
 int remove_item(void)
 {
-    int n;
-
     // inicio de la región critica
 
     int inicio_actual = comp.inicio; // guardamos el indice actual
 
     // realizamos aritmetica modular para que el indice no se salga del buffer
     comp.inicio = (inicio_actual + 1) % N;
+
+    int tam_actual = comp.tam; // rompemos la actualizacion de tam
 
     // forzamos que el proceso se duerma para aumentar
     // la probabilidad de una carrera critica
@@ -263,14 +264,14 @@ int remove_item(void)
     // recien insertado (perdiendo el dato)
     sleep(1);
 
-    n = comp.buffer[inicio_actual]; // leemos el elemento
+    comp.tam = tam_actual - 1; // reducimos tamaño de la cola
+
+    int n = comp.buffer[inicio_actual]; // leemos el elemento
 
     comp.buffer[inicio_actual] = 0; // sustituimos el entero por 0
-    comp.tam--; // reducimos tamaño de la cola
-
+    
     // fin de la region critica
     printf("[CONS] Eliminado '%d'. Inicio: %d | Fin: %d | Longitud: %d\n", n, comp.inicio, comp.fin, comp.tam);
-    imprimir_buffer();
 
     return n;
 }
@@ -285,12 +286,4 @@ void consume_item(int item, int *suma_consumida)
 
     // Imprimimos el valor procesado para seguimiento
     printf("Consumido: %d | Suma acumulada: %d\n", item, *suma_consumida);
-}
-
-void imprimir_buffer(void)
-{
-    printf("Buffer: [ ");
-    for (int i = 0; i < N; i++)
-        printf("%2d ", comp.buffer[i]);
-    printf("]\n");
 }
