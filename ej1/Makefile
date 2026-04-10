@@ -22,4 +22,4 @@ clean:
 	rmdir $(BIN_DIR) 2>/dev/null || true
 
 run: $(BIN_DIR)/$(TARGET)
-	$(BIN_DIR)/$(TARGET) ../numeros.txt
+	$(BIN_DIR)/$(TARGET) ../numeros1.txt

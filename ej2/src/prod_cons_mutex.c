@@ -47,7 +47,6 @@ int produce_item(FILE *f, int *suma);
 void insert_item(int n);
 int remove_item(void);
 void consume_item(int item, int *suma_consumida);
-void imprimir_buffer(void);
 
 // programa principal
 int main(int argc, char **argv)

@@ -2,8 +2,8 @@ CC = gcc
 CFLAGS = -Wall -Wextra
 LDFLAGS = -lpthread
 
-TARGET = prod_cons_mutex
-SRC = src/prod_cons_mutex.c
+TARGET = prod3_cons1
+SRC = src/prod3_cons1.c
 OBJ = $(SRC:.c=.o)
 BIN_DIR = bin
 
@@ -22,4 +22,4 @@ clean:
 	rmdir $(BIN_DIR) 2>/dev/null || true
 
 run: $(BIN_DIR)/$(TARGET)
-	$(BIN_DIR)/$(TARGET) ../numeros2.txt
+	$(BIN_DIR)/$(TARGET) ../numeros1.txt ../numeros2.txt ../numeros3.txt
