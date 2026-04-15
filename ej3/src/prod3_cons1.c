@@ -24,29 +24,34 @@ pthread_cond_t condc, condp; // variables de condicion
 typedef struct
 {
     FILE *ftexto; // archivo de texto (para el hilo productor)
-    int suma;     // suma acumulada de enteros
+    int id; // id del hilo
+    int suma; // suma acumulada de enteros
 } args_hilo;
+
+typedef struct
+{
+    int prioridad; // prioridad del elemento
+    int num; // numero leido
+} tipo_dato;
 
 // estructura FIFO que se guardara en la memoria compartida
 typedef struct
 {
-    int buffer[N];
+    tipo_dato buffer[N];
     int inicio; // indice inicio de la cola
     int fin;    // indice final de la cola
     int tam;    // tamaño de la cola
 } compartido;
 
 // variables globales compartidas entre los dos hilos
-// creamos tres bufferes para la prioridad
-// comp1 (prioridad 1), comp2 (prioridad 2), comp3 (prioridad 3)
-compartido comp1, comp2, comp3; // buffers compartidos
+compartido comp; // buffer compartido
 
 // prototipos
 
 void *hilo_productor(void *arg);
 void *hilo_consumidor(void *arg);
 int produce_item(FILE *f, int *suma);
-void insert_item(int n);
+void insert_item(int n, int prioridad);
 int remove_item(void);
 void consume_item(int item, int *suma_consumida);
 
@@ -70,12 +75,8 @@ int main(int argc, char **argv)
     }
 
     // inicializamos las estructuras compartidas
-    comp1.inicio = 0; comp1.fin = 0; comp1.tam = 0;
-    comp2.inicio = 0; comp2.fin = 0; comp2.tam = 0;
-    comp3.inicio = 0; comp3.fin = 0; comp3.tam = 0;
-    memset(comp1.buffer, 0, sizeof(comp1.buffer));
-    memset(comp2.buffer, 0, sizeof(comp2.buffer));
-    memset(comp3.buffer, 0, sizeof(comp3.buffer));
+    comp.inicio = 0; comp.fin = 0; comp.tam = 0;
+    memset(comp.buffer, 0, sizeof(comp.buffer));
 
     // inicializamos el mutex y las variables de condicion
     pthread_mutex_init(&mut, 0);
@@ -94,6 +95,11 @@ int main(int argc, char **argv)
     memset(&args_prod2.suma, 0, sizeof(args_prod2.suma));
     memset(&args_prod3.suma, 0, sizeof(args_prod3.suma));
     memset(&args_cons.suma, 0, sizeof(args_cons.suma));
+    memset(&args_prod1.id, 1, sizeof(args_prod1.id));
+    memset(&args_prod2.id, 2, sizeof(args_prod2.id));
+    memset(&args_prod3.id, 3, sizeof(args_prod3.id));
+    memset(&args_cons.id, 0, sizeof(args_cons.id));
+    
 
     pthread_t tid_prod1, tid_prod2, tid_prod3, tid_cons; // ids
 
@@ -162,22 +168,10 @@ void *hilo_productor(void *arg)
         }
 
         // sleep fuera de la region critica para controlar la velocidad
-        // iteraciones 0-29 el buffer tiene que llenarse (productor rapido)
-        // iteraciones 30-59 el consumidor vacia el buffer (productor lento)
-        // iteraciones 60-79 velocidad aleatoria entre 0-3s 
-        if (i < 30)
-            sleep(0);
-        else if (i < 60)
-        {
-            printf("[PROD] Voy lento (Iter %d). Esperando 2s...\n", i + 1);
-            sleep(2);
-        }
-        else
-        {
-            int t = rand() % 4;
-            printf("[PROD] Sleep aleatorio (Iter %d). Esperando %ds...\n", i + 1, t);
-            sleep(t);
-        }
+        //  velocidad aleatoria entre 1-6s 
+        int t = rand() % 7 + 1;
+        printf("[PROD] Sleep aleatorio (Iter %d). Esperando %ds...\n", i + 1, t);
+        sleep(t);
 
         // region critica
         pthread_mutex_lock(&mut);
@@ -188,7 +182,7 @@ void *hilo_productor(void *arg)
             printf("[PROD] Buffer lleno en el productor (%d/%d). Esperando...\n", comp.tam, N);
         }
     
-        insert_item(item); // acceso al buffer
+        insert_item(item, a->id); // acceso al buffer
         // fin de la region critica
 
         pthread_cond_signal(&condc); // despierta al consumidor
@@ -233,22 +227,10 @@ void *hilo_consumidor(void *arg)
         consume_item(item, &a->suma);
 
         // sleep fuera de la region critica para controlar la velocidad
-        // iteraciones 0-29 el buffer tiene que llenarse (consumidor lento)
-        // iteracions 30-59 el buffer tiene que vaciarse (consumidor rapido)
-        // iteraciones 60-79 velocidades aleatorias entre 0-3s
-        if (i < 30)
-        {
-            printf("[CONS] Voy lento (Iter %d). Esperando 2s...\n", i + 1);
-            sleep(2);
-        }
-        else if (i < 60)
-            sleep(0);
-        else
-        {
-            int t = rand() % 4;
-            printf("[CONS] Sleep aleatorio (Iter %d). Esperando %ds...\n", i + 1, t);
-            sleep(t);
-        }
+        // velocidades aleatorias entre 1-3s
+        int t = rand() % 4 + 1;
+        printf("[CONS] Sleep aleatorio (Iter %d). Esperando %ds...\n", i + 1, t);
+        sleep(t);
     }
 
     printf("[CONS] Terminado\n");
@@ -282,16 +264,17 @@ int produce_item(FILE *f, int *suma)
 // funcion que inserta el entero en el final de estructura FIFO
 // siempre se llama dentro de la region critica por lo que el acceso
 // a comp es seguro
-void insert_item(int n)
+void insert_item(int n, int prioridad)
 {
-    comp.buffer[comp.fin] = n;
+    comp.buffer[comp.fin].num = n;
+    comp.buffer[comp.fin].prioridad = prioridad;
 
     // calculamos el indice en aritmetica modular para que no se salga del buffer
     comp.fin = (comp.fin + 1) % N;
 
     comp.tam++; // aumentamos tamaño de la cola
 
-    printf("[PROD] Insertado '%d'. Inicio: %d | Fin: %d | Longitud: %d\n", n, comp.inicio, comp.fin, comp.tam);
+    printf("[PROD] Insertado '%d' (Prioridad %d). Inicio: %d | Fin: %d | Longitud: %d\n", n, prioridad, comp.inicio, comp.fin, comp.tam);
 }
 
 // funcion que retira el elemento del principio de la cola FIFO y lo
@@ -299,17 +282,76 @@ void insert_item(int n)
 // siempre se llama dentro de la region critica igual que insert_item
 int remove_item(void)
 {
-    int n = comp.buffer[comp.inicio]; // leemos el elemento
-    
-    comp.buffer[comp.inicio] = 0; // sustituimos el entero por 0
-    
-    // realizamos aritmetica modular para que el indice no se salga del buffer
-    comp.inicio = (comp.inicio + 1) % N;
+    int n = 0;
 
-    comp.tam--; // reducimos tamaño de la cola
+    for (int i = comp.inicio; i < comp.fin; i= ((i + 1) % comp.tam))
+    {
+        int prioridad = comp.buffer[i].prioridad;
 
-    // fin de la region critica
-    printf("[CONS] Eliminado '%d'. Inicio: %d | Fin: %d | Longitud: %d\n", n, comp.inicio, comp.fin, comp.tam);
+        if (prioridad == 1)
+        {
+            n = comp.buffer[i].num; // leemos el elemento
+    
+            comp.buffer[i].num = 0; // sustituimos el entero por 0
+            comp.buffer[i].prioridad = 0;
+    
+            // realizamos aritmetica modular para que el indice no se salga del buffer
+            comp.inicio = (comp.inicio + 1) % N;
+
+            comp.tam--; // reducimos tamaño de la cola
+
+            // fin de la region critica
+            printf("[CONS] Eliminado '%d' (Prioridad %d). Inicio: %d | Fin: %d | Longitud: %d\n", n, prioridad, comp.inicio, comp.fin, comp.tam);
+
+            return n;
+        }
+    }
+
+    for (int i = comp.inicio; i < comp.fin; i = ((i + 1) % comp.tam))
+    {
+        int prioridad = comp.buffer[i].prioridad;
+
+        if (prioridad == 2)
+        {
+            n = comp.buffer[i].num; // leemos el elemento
+    
+            comp.buffer[i].num = 0; // sustituimos el entero por 0
+            comp.buffer[i].prioridad = 0;
+    
+            // realizamos aritmetica modular para que el indice no se salga del buffer
+            comp.inicio = (comp.inicio + 1) % N;
+
+            comp.tam--; // reducimos tamaño de la cola
+
+            // fin de la region critica
+            printf("[CONS] Eliminado '%d' (Prioridad %d). Inicio: %d | Fin: %d | Longitud: %d\n", n, prioridad, comp.inicio, comp.fin, comp.tam);
+
+            return n;
+        }
+    }
+
+    for (int i = comp.inicio; i < comp.fin; i = ((i + 1) % comp.tam))
+    {
+        int prioridad = comp.buffer[i].prioridad;
+
+        if (prioridad == 3)
+        {
+            n = comp.buffer[i].num; // leemos el elemento
+    
+            comp.buffer[i].num = 0; // sustituimos el entero por 0
+            comp.buffer[i].prioridad = 0;
+    
+            // realizamos aritmetica modular para que el indice no se salga del buffer
+            comp.inicio = (comp.inicio + 1) % N;
+
+            comp.tam--; // reducimos tamaño de la cola
+
+            // fin de la region critica
+            printf("[CONS] Eliminado '%d' (Prioridad %d). Inicio: %d | Fin: %d | Longitud: %d\n", n, prioridad, comp.inicio, comp.fin, comp.tam);
+
+            return n;
+        }
+    }
 
     return n;
 }
