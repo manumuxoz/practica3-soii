@@ -34,13 +34,15 @@ typedef struct
 {
     int prioridad; // prioridad del elemento
     int num; // numero leido
+    long long tiempo_creacion; // tiempo de creacion
+    long long tiempo_caducidad; // tiempo de caducidad
 } tipo_dato;
 
 // estructura FIFO que se guardara en la memoria compartida
 typedef struct
 {
     tipo_dato buffer[N];
-    int tam;    // tamaño de la cola
+    int tam; // tamaño de la cola
 } compartido;
 
 // variables globales compartidas entre los dos hilos
@@ -53,8 +55,8 @@ void *hilo_productor(void *arg);
 void *hilo_consumidor(void *arg);
 int produce_item(FILE *f, int *suma);
 void insert_item(int n, int prioridad);
-int remove_item(int *prioridad_extraida);
-void consume_item(int item, int prioridad, int *sumas);
+int remove_item(int *prioridad_extraida, long long *tiempo_creacion_extraido, long long *tiempo_caducidad_extraido);
+void consume_item(int item, int prioridad, long long tiempo_creacion_extraido, long long tiempo_caducidad_extraido, int *sumas);
 long long get_timestamp_ms(void);
 
 // programa principal
@@ -155,7 +157,7 @@ void *hilo_productor(void *arg)
     args_hilo *a = (args_hilo *)arg;
 
     // semilla para los sleeps aleatorios de las ultimas iteraciones
-    srand((unsigned int)time(NULL));
+    srand((unsigned int)time(NULL) ^ a->id);
 
     for (int i = 0; i < ITERACIONES; i++)
     {
@@ -224,7 +226,8 @@ void *hilo_consumidor(void *arg)
 
         // region critica
         int prioridad_extraida;
-        int item = remove_item(&prioridad_extraida);
+        long long tiempo_creacion_extraido, tiempo_caducidad_extraido;
+        int item = remove_item(&prioridad_extraida, &tiempo_creacion_extraido, &tiempo_caducidad_extraido);
 
         // despertamos a todos los productores (broadcast) que puedan estar bloqueados
         pthread_cond_broadcast(&condp);
@@ -232,7 +235,7 @@ void *hilo_consumidor(void *arg)
         // fin de la region critica
 
         // procesamos el item fuera de la region critica
-        consume_item(item, prioridad_extraida, a->sumas_cons);
+        consume_item(item, prioridad_extraida, tiempo_creacion_extraido, tiempo_caducidad_extraido, a->sumas_cons);
     }
 
     printf("[%lld] [CONS] Terminado\n", get_timestamp_ms());
@@ -252,10 +255,6 @@ int produce_item(FILE *f, int *suma)
     if (fscanf(f, "%d", &numero_leido) == 1)
     {
         *suma += numero_leido;
-
-        // Imprimimos el valor procesado para seguimiento
-        printf("[%lld] Producido: %d | Suma acumulada: %d\n", get_timestamp_ms(), numero_leido, *suma);
-
         return numero_leido;
     }
 
@@ -268,18 +267,23 @@ int produce_item(FILE *f, int *suma)
 // a comp es seguro
 void insert_item(int n, int prioridad)
 {
+    long long creacion = get_timestamp_ms();
+    long long caducidad = (rand() % 12 + 1) * 1000;
+
     // insertamos al final del array actual
     comp.buffer[comp.tam].num = n;
     comp.buffer[comp.tam].prioridad = prioridad;
+    comp.buffer[comp.tam].tiempo_creacion = creacion;
+    comp.buffer[comp.tam].tiempo_caducidad = caducidad;
     comp.tam++; // aumentamos tamaño de la cola
 
-    printf("[%lld] [PROD %d] Insertado '%d' (Prioridad %d). Longitud: %d\n", get_timestamp_ms(), prioridad, n, prioridad, comp.tam);
+    printf("[%lld] [PROD %d] Insertado '%d' (Prioridad %d). Longitud: %d | Tiempo de caducidad: %llds\n", get_timestamp_ms(), prioridad, n, prioridad, comp.tam, caducidad / 1000);
 }
 
 // funcion que retira el elemento del principio de la cola FIFO y lo
 // reemplaza por 0
 // siempre se llama dentro de la region critica igual que insert_item
-int remove_item(int *prioridad_extraida)
+int remove_item(int *prioridad_extraida, long long *tiempo_creacion_extraido, long long *tiempo_caducidad_extraido)
 {
     int mejor_idx = 0;
 
@@ -291,6 +295,8 @@ int remove_item(int *prioridad_extraida)
 
     int n = comp.buffer[mejor_idx].num;
     *prioridad_extraida = comp.buffer[mejor_idx].prioridad;
+    *tiempo_creacion_extraido = comp.buffer[mejor_idx].tiempo_creacion;
+    *tiempo_caducidad_extraido = comp.buffer[mejor_idx].tiempo_caducidad;
     
     // desplazamos los elementos a la izquierda para eliminar el hueco
     // mantenemos el orden de los elementos con la misma prioridad
@@ -310,16 +316,23 @@ int remove_item(int *prioridad_extraida)
 // funcion que actualiza el suma acumulada del consumidor con el
 // item retirado
 // no accede al buffer compartido
-void consume_item(int item, int prioridad, int *sumas)
+void consume_item(int item, int prioridad, long long tiempo_creacion_extraido, long long tiempo_caducidad_extraido, int *sumas)
 {
-    // sleep para controlar la velocidad
-    // velocidades aleatorias entre 1-3s
-    int t = rand() % 3 + 1;
-    printf("[%lld] [CONS] Procesando '%d' (Prioridad %d). Esperando %ds...\n", get_timestamp_ms(), item, prioridad, t);
-    sleep(t);
+    long long tiempo_actual = get_timestamp_ms();
+    long long tiempo_transcurrido = tiempo_actual - tiempo_creacion_extraido;
 
-    // sumamos el entero recibido al acumulador del consumidor
-    sumas[prioridad - 1] += item; // suma especifica del fichero
+    // si ha pasado mas tiempo que la caducidad esta caducado
+    if (tiempo_transcurrido <= tiempo_caducidad_extraido) {
+        // sleep para controlar la velocidad
+        // velocidades aleatorias entre 1-3s
+        int t = rand() % 3 + 1;
+        printf("[%lld] [CONS] Procesando '%d' (Prioridad %d). Esperando %ds...\n", get_timestamp_ms(), item, prioridad, t);
+        sleep(t);
+
+        // sumamos el entero recibido al acumulador del consumidor
+        sumas[prioridad - 1] += item; // suma especifica del fichero
+    } else
+        printf("[%lld] [CONS] Item '%d' (Prioridad %d) caducado. No se suma. Tiempo transcurrido: %llds\n", get_timestamp_ms(), item, prioridad, tiempo_transcurrido / 1000);
 
     // imprimimos el valor procesado para seguimiento
     printf("[%lld] [CONS] Consumido '%d' (Prioridad %d). Sumas acumuladas: %d (PROD 1) %d (PROD 2) %d (PROD 3)\n", 
