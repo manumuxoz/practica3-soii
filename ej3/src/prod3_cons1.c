@@ -3,8 +3,9 @@
 #include <string.h>
 #include <unistd.h>
 #include <ctype.h>
-#include <pthread.h>   // hilos
+#include <pthread.h> // hilos
 #include <time.h>
+#include <sys/time.h>
 
 // productor y consumidor son dos hilos dentro del mismo proceso
 // al compartir el espacio de direcciones la estructura compartida
@@ -26,6 +27,7 @@ typedef struct
     FILE *ftexto; // archivo de texto (para el hilo productor)
     int id; // id del hilo
     int suma; // suma acumulada de enteros
+    int sumas_cons[3]; // para el consumidor (suma independiente de los 3 ficheros)
 } args_hilo;
 
 typedef struct
@@ -38,8 +40,6 @@ typedef struct
 typedef struct
 {
     tipo_dato buffer[N];
-    int inicio; // indice inicio de la cola
-    int fin;    // indice final de la cola
     int tam;    // tamaño de la cola
 } compartido;
 
@@ -52,8 +52,9 @@ void *hilo_productor(void *arg);
 void *hilo_consumidor(void *arg);
 int produce_item(FILE *f, int *suma);
 void insert_item(int n, int prioridad);
-int remove_item(void);
-void consume_item(int item, int *suma_consumida);
+int remove_item(int *prioridad_extraida);
+void consume_item(int item, int prioridad, int *sumas);
+long long get_timestamp_ms(void);
 
 // programa principal
 int main(int argc, char **argv)
@@ -70,12 +71,12 @@ int main(int argc, char **argv)
     FILE *ftexto3 = fopen(argv[3], "r");
     if (!ftexto1 || !ftexto2 || !ftexto3)
     {
-        perror("Error al abrir el archivo de texto");
+        perror("Error al abrir los archivos");
         exit(1);
     }
 
     // inicializamos las estructuras compartidas
-    comp.inicio = 0; comp.fin = 0; comp.tam = 0;
+    comp.tam = 0;
     memset(comp.buffer, 0, sizeof(comp.buffer));
 
     // inicializamos el mutex y las variables de condicion
@@ -87,21 +88,16 @@ int main(int argc, char **argv)
     // preparamos los argumentos para cada hilo en structs separadas
     // si usasemos la misma estructura para los dos hilos tendriamos
     // una carrera critica sobre count_vocales
-    args_hilo args_prod1 = {.ftexto = ftexto1};
-    args_hilo args_prod2 = {.ftexto = ftexto2};
-    args_hilo args_prod3 = {.ftexto = ftexto3};
-    args_hilo args_cons = {.ftexto = NULL};
-    memset(&args_prod1.suma, 0, sizeof(args_prod1.suma));
-    memset(&args_prod2.suma, 0, sizeof(args_prod2.suma));
-    memset(&args_prod3.suma, 0, sizeof(args_prod3.suma));
-    memset(&args_cons.suma, 0, sizeof(args_cons.suma));
-    memset(&args_prod1.id, 1, sizeof(args_prod1.id));
-    memset(&args_prod2.id, 2, sizeof(args_prod2.id));
-    memset(&args_prod3.id, 3, sizeof(args_prod3.id));
-    memset(&args_cons.id, 0, sizeof(args_cons.id));
-    
 
-    pthread_t tid_prod1, tid_prod2, tid_prod3, tid_cons; // ids
+    // argumentos productores
+    args_hilo args_prod1 = {.ftexto = ftexto1, .id = 1, .suma = 0};
+    args_hilo args_prod2 = {.ftexto = ftexto2, .id = 2, .suma = 0};
+    args_hilo args_prod3 = {.ftexto = ftexto3, .id = 3, .suma = 0};
+
+    // argumentos para consumidor
+    args_hilo args_cons = {.ftexto = NULL, .id = 0, .suma = 0};
+
+    pthread_t tid_prod1, tid_prod2, tid_prod3, tid_cons; // hilos
 
     // pthread_create lanza el hilo y lo pone a ejecutar la funcion indicada
     // el cuarto argumento es el void* que recibira la funcion del hilo
@@ -129,7 +125,8 @@ int main(int argc, char **argv)
     printf("[PROD 2] Suma acumulada: %d\n", args_prod2.suma);
     printf("[PROD 3] Suma acumulada: %d\n", args_prod3.suma);
 
-    printf("[CONS] Suma acumulada: %d\n", args_cons.suma);
+    printf("[CONS] Sumas acumuladas: %d (PROD 1) %d (PROD 2) %d (PROD 3)\n", 
+        args_cons.sumas_cons[0], args_cons.sumas_cons[1], args_cons.sumas_cons[2]);
 
     // limpiamos recursos
     pthread_mutex_destroy(&mut);
@@ -169,8 +166,8 @@ void *hilo_productor(void *arg)
 
         // sleep fuera de la region critica para controlar la velocidad
         //  velocidad aleatoria entre 1-6s 
-        int t = rand() % 7 + 1;
-        printf("[PROD] Sleep aleatorio (Iter %d). Esperando %ds...\n", i + 1, t);
+        int t = rand() % 6 + 1;
+        printf("[%lld] [PROD %d] Sleep aleatorio (Iter %d). Esperando %ds...\n", get_timestamp_ms(), a->id, i + 1, t);
         sleep(t);
 
         // region critica
@@ -179,7 +176,7 @@ void *hilo_productor(void *arg)
         while(comp.tam == N) // buffer lleno
         {
             pthread_cond_wait(&condp, &mut);
-            printf("[PROD] Buffer lleno en el productor (%d/%d). Esperando...\n", comp.tam, N);
+            printf("[%lld] [PROD %d] Buffer lleno en el productor (%d/%d). Esperando...\n", get_timestamp_ms(), a->id, comp.tam, N);
         }
     
         insert_item(item, a->id); // acceso al buffer
@@ -189,7 +186,7 @@ void *hilo_productor(void *arg)
         pthread_mutex_unlock(&mut);
     }
 
-    printf("[PROD] Terminado\n");
+    printf("[%lld] [PROD %d] Terminado\n", get_timestamp_ms(), a->id);
 
     return NULL; // pthread_join en main recibira este valor de retorno
 }
@@ -204,36 +201,35 @@ void *hilo_consumidor(void *arg)
     // semilla distinta a la del productor para los sleeps alaeatorios
     srand((unsigned int)time(NULL) ^ (unsigned int)pthread_self());
 
+    // el consumidor debe extraer el total de items (3 productores * ITERACIONES)
+    int total_items = ITERACIONES * 3;
+
     // ejecutamos en bucle mientras el productor no haya terminado de leer el archivo
     // o haya elementos en el buffer
-    for (int i = 0; i < ITERACIONES; i++)
+    for (int i = 0; i < total_items; i++)
     {
         pthread_mutex_lock(&mut);
     
         while (comp.tam == 0) // espera mientras este vacio
         {
             pthread_cond_wait(&condc, &mut);
-            printf("[CONS] Buffer vacio. Esperando...\n");
+            printf("[%lld] [CONS] Buffer vacio. Esperando...\n", get_timestamp_ms());
         }
 
         // region critica
-        int item = remove_item();
+        int prioridad_extraida;
+        int item = remove_item(&prioridad_extraida);
 
-        pthread_cond_signal(&condp); // despierta al productor
+        // despertamos a todos los productores (broadcast) que puedan estar bloqueados
+        pthread_cond_broadcast(&condp);
         pthread_mutex_unlock(&mut);
         // fin de la region critica
 
         // procesamos el item fuera de la region critica
-        consume_item(item, &a->suma);
-
-        // sleep fuera de la region critica para controlar la velocidad
-        // velocidades aleatorias entre 1-3s
-        int t = rand() % 4 + 1;
-        printf("[CONS] Sleep aleatorio (Iter %d). Esperando %ds...\n", i + 1, t);
-        sleep(t);
+        consume_item(item, prioridad_extraida, a->sumas_cons);
     }
 
-    printf("[CONS] Terminado\n");
+    printf("[%lld] [CONS] Terminado\n", get_timestamp_ms());
     return NULL;
 }
 
@@ -252,7 +248,7 @@ int produce_item(FILE *f, int *suma)
         *suma += numero_leido;
 
         // Imprimimos el valor procesado para seguimiento
-        printf("Producido: %d | Suma acumulada: %d\n", numero_leido, *suma);
+        printf("[%lld] Producido: %d | Suma acumulada: %d\n", get_timestamp_ms(), numero_leido, *suma);
 
         return numero_leido;
     }
@@ -266,104 +262,68 @@ int produce_item(FILE *f, int *suma)
 // a comp es seguro
 void insert_item(int n, int prioridad)
 {
-    comp.buffer[comp.fin].num = n;
-    comp.buffer[comp.fin].prioridad = prioridad;
-
-    // calculamos el indice en aritmetica modular para que no se salga del buffer
-    comp.fin = (comp.fin + 1) % N;
-
+    // insertamos al final del array actual
+    comp.buffer[comp.tam].num = n;
+    comp.buffer[comp.tam].prioridad = prioridad;
     comp.tam++; // aumentamos tamaño de la cola
 
-    printf("[PROD] Insertado '%d' (Prioridad %d). Inicio: %d | Fin: %d | Longitud: %d\n", n, prioridad, comp.inicio, comp.fin, comp.tam);
+    printf("[%lld] [PROD %d] Insertado '%d' (Prioridad %d). Longitud: %d\n", get_timestamp_ms(), prioridad, n, prioridad, comp.tam);
 }
 
 // funcion que retira el elemento del principio de la cola FIFO y lo
 // reemplaza por 0
 // siempre se llama dentro de la region critica igual que insert_item
-int remove_item(void)
+int remove_item(int *prioridad_extraida)
 {
-    int n = 0;
+    int mejor_idx = 0;
 
-    for (int i = comp.inicio; i < comp.fin; i= ((i + 1) % comp.tam))
-    {
-        int prioridad = comp.buffer[i].prioridad;
-
-        if (prioridad == 1)
-        {
-            n = comp.buffer[i].num; // leemos el elemento
+    // buscamos el elemento con mayor prioridad (numero mas bajo)
+    for (int i = 1; i < comp.tam; i++)
+        if (comp.buffer[i].prioridad < comp.buffer[mejor_idx].prioridad)
+            mejor_idx = i;
     
-            comp.buffer[i].num = 0; // sustituimos el entero por 0
-            comp.buffer[i].prioridad = 0;
+
+    int n = comp.buffer[mejor_idx].num;
+    *prioridad_extraida = comp.buffer[mejor_idx].prioridad;
     
-            // realizamos aritmetica modular para que el indice no se salga del buffer
-            comp.inicio = (comp.inicio + 1) % N;
+    // desplazamos los elementos a la izquierda para eliminar el hueco
+    // mantenemos el orden de los elementos con la misma prioridad
+    for (int i = mejor_idx; i < comp.tam - 1; i++)
+        comp.buffer[i] = comp.buffer[i + 1];
 
-            comp.tam--; // reducimos tamaño de la cola
+    comp.tam--; // reducimos tamaño de la cola
+    comp.buffer[comp.tam].num = 0; // limpiamos por seguridad
+    comp.buffer[comp.tam].prioridad = 0;
+    // fin de la region critica
 
-            // fin de la region critica
-            printf("[CONS] Eliminado '%d' (Prioridad %d). Inicio: %d | Fin: %d | Longitud: %d\n", n, prioridad, comp.inicio, comp.fin, comp.tam);
-
-            return n;
-        }
-    }
-
-    for (int i = comp.inicio; i < comp.fin; i = ((i + 1) % comp.tam))
-    {
-        int prioridad = comp.buffer[i].prioridad;
-
-        if (prioridad == 2)
-        {
-            n = comp.buffer[i].num; // leemos el elemento
+    printf("[%lld] [CONS] Eliminado '%d' (Prioridad %d). Longitud: %d\n", get_timestamp_ms(), n, *prioridad_extraida, comp.tam);
     
-            comp.buffer[i].num = 0; // sustituimos el entero por 0
-            comp.buffer[i].prioridad = 0;
-    
-            // realizamos aritmetica modular para que el indice no se salga del buffer
-            comp.inicio = (comp.inicio + 1) % N;
-
-            comp.tam--; // reducimos tamaño de la cola
-
-            // fin de la region critica
-            printf("[CONS] Eliminado '%d' (Prioridad %d). Inicio: %d | Fin: %d | Longitud: %d\n", n, prioridad, comp.inicio, comp.fin, comp.tam);
-
-            return n;
-        }
-    }
-
-    for (int i = comp.inicio; i < comp.fin; i = ((i + 1) % comp.tam))
-    {
-        int prioridad = comp.buffer[i].prioridad;
-
-        if (prioridad == 3)
-        {
-            n = comp.buffer[i].num; // leemos el elemento
-    
-            comp.buffer[i].num = 0; // sustituimos el entero por 0
-            comp.buffer[i].prioridad = 0;
-    
-            // realizamos aritmetica modular para que el indice no se salga del buffer
-            comp.inicio = (comp.inicio + 1) % N;
-
-            comp.tam--; // reducimos tamaño de la cola
-
-            // fin de la region critica
-            printf("[CONS] Eliminado '%d' (Prioridad %d). Inicio: %d | Fin: %d | Longitud: %d\n", n, prioridad, comp.inicio, comp.fin, comp.tam);
-
-            return n;
-        }
-    }
-
     return n;
 }
 
 // funcion que actualiza el suma acumulada del consumidor con el
 // item retirado
 // no accede al buffer compartido
-void consume_item(int item, int *suma_consumida)
+void consume_item(int item, int prioridad, int *sumas)
 {
-    // Sumamos el entero recibido al acumulador del consumidor
-    *suma_consumida += item;
+    // sleep para controlar la velocidad
+    // velocidades aleatorias entre 1-3s
+    int t = rand() % 3 + 1;
+    printf("[%lld] [CONS] Procesando '%d' (Prioridad %d). Esperando %ds...\n", get_timestamp_ms(), item, prioridad, t);
+    sleep(t);
 
-    // Imprimimos el valor procesado para seguimiento
-    printf("Consumido: %d | Suma acumulada: %d\n", item, *suma_consumida);
+    // sumamos el entero recibido al acumulador del consumidor
+    sumas[prioridad - 1] += item; // suma especifica del fichero
+
+    // imprimimos el valor procesado para seguimiento
+    printf("[%lld] [CONS] Consumido '%d' (Prioridad %d). Sumas acumuladas: %d (PROD 1) %d (PROD 2) %d (PROD 3)\n", 
+        get_timestamp_ms(), item, prioridad, sumas[0], sumas[1], sumas[2]);
+}
+
+// funcion auxiliar para timestamps
+long long get_timestamp_ms(void)
+{
+    struct timeval tv;
+    gettimeofday(&tv, NULL);
+    return (long long)(tv.tv_sec) * 1000 + (long long)(tv.tv_usec) / 1000;
 }
