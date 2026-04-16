@@ -14,12 +14,13 @@
 // las carreras criticas
 // los items tienen diferentes prioridades dentro de la cola
 // dependiendo de quien los haya producido
-// los items tienen un tiempo de creacion y caducidad asociado
+// los itemes tienen un tiempo de creacion y caducidad asociado
 // si el tiempo transcurrido es mayor al tiempo de caducidad
 // no se tiene en cuenta para las sumas acumuladas en el consumidor
-// la funcion consume_item() tarda 3 segundos en procesar un item de prioridad 1
-// 2 segundos en procesar un item de prioridad 2
-// 1 segundo en procesar un item de prioridad 3
+// los items de las diferentes prioridades se generan en tiempos fijos
+// prioridad 1 cada 7s
+// prioridad 2 cada 5s
+// prioridad 3 cada 3s
 
 #define N 10 // tamaño del buffer
 
@@ -179,12 +180,19 @@ void *hilo_productor(void *arg) {
       item = produce_item(a->ftexto, &a->suma);
     }
 
+    printf("[%lld] [PROD %d] Sleep por prioridad (Iter %d). Esperando %ds...\n",
+           get_timestamp_ms(), a->id, i + 1,
+           a->id == 1   ? 7
+           : a->id == 2 ? 5
+                        : 3);
+
     // sleep fuera de la region critica para controlar la velocidad
-    //  velocidad aleatoria entre 1-6s
-    int t = rand() % 6 + 1;
-    printf("[%lld] [PROD %d] Sleep aleatorio (Iter %d). Esperando %ds...\n",
-           get_timestamp_ms(), a->id, i + 1, t);
-    sleep(t);
+    if (a->id == 1)
+      sleep(7); // 7 segundos para prioridad 1
+    else if (a->id == 2)
+      sleep(5); // 5 segundos para prioridad 2
+    else if (a->id == 3)
+      sleep(3); // 3 segundos para prioridad 3
 
     // region critica
     pthread_mutex_lock(&mut);
@@ -341,19 +349,12 @@ void consume_item(int item, int prioridad, long long tiempo_creacion_extraido,
 
   // si ha pasado mas tiempo que la caducidad esta caducado
   if (tiempo_transcurrido <= tiempo_caducidad_extraido) {
-    // dormimos el consumidor dependiendo de la prioridad del item
-    if (prioridad == 1)
-      sleep(3);
-    else if (prioridad == 2)
-      sleep(2);
-    else
-      sleep(1);
-
+    // sleep para controlar la velocidad
+    // velocidades aleatorias entre 1-3s
+    int t = rand() % 3 + 1;
     printf("[%lld] [CONS] Procesando '%d' (Prioridad %d). Esperando %ds...\n",
-           get_timestamp_ms(), item, prioridad,
-           prioridad == 1   ? 3
-           : prioridad == 2 ? 2
-                            : 1);
+           get_timestamp_ms(), item, prioridad, t);
+    sleep(t);
 
     // sumamos el entero recibido al acumulador del consumidor
     sumas[prioridad - 1] += item; // suma especifica del fichero
