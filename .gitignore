@@ -3,3 +3,6 @@
 
 # ignorar archivos objeto
 *.o
+
+# ignorar capturas de pantalla
+capturas/
