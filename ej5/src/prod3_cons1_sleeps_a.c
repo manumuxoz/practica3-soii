@@ -17,16 +17,17 @@
 // los items tienen un tiempo de creacion y caducidad asociado
 // si el tiempo transcurrido es mayor al tiempo de caducidad
 // no se tiene en cuenta para las sumas acumuladas en el consumidor
-// la funcion consume_item() tarda 3 segundos en procesar un item de prioridad 1
+// consume_item() tarda 3 segundos en procesar un item de prioridad 1
 // 2 segundos en procesar un item de prioridad 2
 // 1 segundo en procesar un item de prioridad 3
 
-#define N 10 // tamaño del buffer
-
+#define N 10           // tamaño del buffer
+#define NUM_PROD 3     // numero de productores
 #define ITERACIONES 80 // numero de iteraciones productor/consumidor
 
-pthread_mutex_t mut;         // mutex
-pthread_cond_t condc, condp; // variables de condicion
+pthread_mutex_t mutp[NUM_PROD], mutc;  // mutexes
+pthread_cond_t condp[NUM_PROD], condc; // variables de condicion
+int items_totales_disponibles = 0;
 
 // estructura de argumentos para los hilos
 // pthread_create solo permite pasar un unico putero void* para cada hilo
@@ -42,8 +43,8 @@ typedef struct {
 typedef struct {
   int prioridad;              // prioridad del elemento
   int num;                    // numero leido
-  long long tiempo_creacion;  // tiempo de creacion
-  long long tiempo_caducidad; // tiempo de caducidad
+  long long tiempo_creacion;  // tiempo en el que se ha creado
+  long long tiempo_caducidad; // tiempo que tiene para que caduque
 } tipo_dato;
 
 // estructura FIFO que se guardara en la memoria compartida
@@ -53,7 +54,7 @@ typedef struct {
 } compartido;
 
 // variables globales compartidas entre los dos hilos
-compartido comp;                      // buffer compartido
+compartido comp[NUM_PROD];            // buffer compartido
 long long tiempo_inicio_programa = 0; // guarda el tiempo base
 
 // prototipos
@@ -61,11 +62,11 @@ long long tiempo_inicio_programa = 0; // guarda el tiempo base
 void *hilo_productor(void *arg);
 void *hilo_consumidor(void *arg);
 int produce_item(FILE *f, int *suma);
-void insert_item(int n, int prioridad);
-int remove_item(int *prioridad_extraida, long long *tiempo_creacion_extraido,
-                long long *tiempo_caducidad_extraido);
-void consume_item(int item, int prioridad, long long tiempo_creacion_extraido,
-                  long long tiempo_caducidad_extraido, int *sumas);
+void insert_item(int q, int n, int prioridad);
+int remove_item(int q, int *prioridad_extraida, long long *t_creacion,
+                long long *t_caducidad);
+void consume_item(int item, int prioridad, long long t_creacion,
+                  long long t_caducidad, int *sumas);
 long long get_timestamp_ms(void);
 
 // programa principal
@@ -94,19 +95,22 @@ int main(int argc, char **argv) {
     exit(1);
   }
 
-  // inicializamos las estructuras compartidas
-  comp.tam = 0;
-  memset(comp.buffer, 0, sizeof(comp.buffer));
-
-  // inicializamos el mutex y las variables de condicion
-  pthread_mutex_init(&mut, 0);
+  // inicializamos el mutex y cond global del consumidor
+  pthread_mutex_init(&mutc, 0);
   pthread_cond_init(&condc, 0);
-  pthread_cond_init(&condp, 0);
+
+  // inicializamos las 3 colas, sus mutexes y sus variables de condicion
+  for (int i = 0; i < NUM_PROD; i++) {
+    comp[i].tam = 0;
+    memset(comp[i].buffer, 0, sizeof(comp[i].buffer));
+    pthread_mutex_init(&mutp[i], 0);
+    pthread_cond_init(&condp[i], 0);
+  }
 
   // creamos los hilos
   // preparamos los argumentos para cada hilo en structs separadas
   // si usasemos la misma estructura para los dos hilos tendriamos
-  // una carrera critica sobre count_vocales
+  // una carrera critica
 
   // argumentos productores
   args_hilo args_prod1 = {.ftexto = ftexto1, .id = 1, .suma = 0};
@@ -147,9 +151,12 @@ int main(int argc, char **argv) {
          args_cons.sumas_cons[2]);
 
   // limpiamos recursos
-  pthread_mutex_destroy(&mut);
+  pthread_mutex_destroy(&mutc);
   pthread_cond_destroy(&condc);
-  pthread_cond_destroy(&condp);
+  for (int i = 0; i < NUM_PROD; i++) {
+    pthread_mutex_destroy(&mutp[i]);
+    pthread_cond_destroy(&condp[i]);
+  }
   fclose(ftexto1);
   fclose(ftexto2);
   fclose(ftexto3);
@@ -167,6 +174,8 @@ void *hilo_productor(void *arg) {
 
   // semilla para los sleeps aleatorios de las ultimas iteraciones
   srand((unsigned int)time(NULL) ^ a->id);
+
+  int q_id = a->id - 1; // indice de la cola
 
   for (int i = 0; i < ITERACIONES; i++) {
     // produce_item no accede al buffer, por lo que esta fuera de
@@ -187,21 +196,27 @@ void *hilo_productor(void *arg) {
     sleep(t);
 
     // region critica
-    pthread_mutex_lock(&mut);
 
-    while (comp.tam == N) // buffer lleno
+    // bloqueamos exclusivamente la cola de este productor
+    pthread_mutex_lock(&mutp[q_id]);
+
+    while (comp[q_id].tam == N) // buffer lleno
     {
-      pthread_cond_wait(&condp, &mut);
+      pthread_cond_wait(&condp[q_id], &mutp[q_id]);
       printf("[%lld] [PROD %d] Buffer lleno en el productor (%d/%d). "
              "Esperando...\n",
-             get_timestamp_ms(), a->id, comp.tam, N);
+             get_timestamp_ms(), a->id, comp[q_id].tam, N);
     }
 
-    insert_item(item, a->id); // acceso al buffer
+    insert_item(q_id, item, a->id); // acceso al buffer
+    pthread_mutex_unlock(&mutp[q_id]);
     // fin de la region critica
 
-    pthread_cond_signal(&condc); // despierta al consumidor
-    pthread_mutex_unlock(&mut);
+    // avisamos al consumidor de que hay un nuevo item global
+    pthread_mutex_lock(&mutc);
+    items_totales_disponibles++;
+    pthread_cond_signal(&condc);
+    pthread_mutex_unlock(&mutc);
   }
 
   printf("[%lld] [PROD %d] Terminado\n", get_timestamp_ms(), a->id);
@@ -224,29 +239,51 @@ void *hilo_consumidor(void *arg) {
   // ejecutamos en bucle mientras el productor no haya terminado de leer el
   // archivo o haya elementos en el buffer
   for (int i = 0; i < total_items; i++) {
-    pthread_mutex_lock(&mut);
+    pthread_mutex_lock(&mutc);
 
-    while (comp.tam == 0) // espera mientras este vacio
+    while (items_totales_disponibles == 0) // espera mientras este vacio
     {
-      pthread_cond_wait(&condc, &mut);
-      printf("[%lld] [CONS] Buffer vacio. Esperando...\n", get_timestamp_ms());
+      printf("[%lld] [CONS] Todos los buffers vacios. Esperando...\n",
+             get_timestamp_ms());
+      pthread_cond_wait(&condc, &mutc);
     }
 
+    items_totales_disponibles--;
+    pthread_mutex_unlock(&mutc); // desbloqueamos el mutex global
+
     // region critica
-    int prioridad_extraida;
-    long long tiempo_creacion_extraido, tiempo_caducidad_extraido;
-    int item = remove_item(&prioridad_extraida, &tiempo_creacion_extraido,
-                           &tiempo_caducidad_extraido);
+    int prioridad_extraida = 0;
+    int item = 0;
+    long long t_creacion = 0;
+    long long t_caducidad = 0;
+    int extraido = 0;
 
-    // despertamos a todos los productores (broadcast) que puedan estar
-    // bloqueados
-    pthread_cond_broadcast(&condp);
-    pthread_mutex_unlock(&mut);
-    // fin de la region critica
+    while (!extraido) {
+      // trylock: si el productor tiene tiene bloqueada la cola, no nos
+      // atascamos, pasamos instantaneamente a comprobar la siguiente prioridad
+      for (int q = 0; q < NUM_PROD; q++) {
+        if (pthread_mutex_trylock(&mutp[q]) == 0) {
+          // si el buffer no esta vacio
+          if (comp[q].tam > 0) {
+            item =
+                remove_item(q, &prioridad_extraida, &t_creacion, &t_caducidad);
+            extraido = 1;
+            pthread_cond_signal(
+                &condp[q]); // despertamos el productor de esta cola especifica
+          }
+          pthread_mutex_unlock(&mutp[q]);
 
-    // procesamos el item fuera de la region critica
-    consume_item(item, prioridad_extraida, tiempo_creacion_extraido,
-                 tiempo_caducidad_extraido, a->sumas_cons);
+          if (extraido)
+            break; // si ya extrajimos, salimos del bucle for
+        }
+        // si el bucle termina y no ha extraido nada (porque justo en ese
+        // milisegundo los productores tenian los mutexes bloqueados
+        // insertando), el while vuelve a intentar inmediatamente
+      }
+    }
+    // procesamos el item
+    consume_item(item, prioridad_extraida, t_creacion, t_caducidad,
+                 a->sumas_cons);
   }
 
   printf("[%lld] [CONS] Terminado\n", get_timestamp_ms());
@@ -273,60 +310,42 @@ int produce_item(FILE *f, int *suma) {
 // funcion que inserta el entero en el final de estructura FIFO
 // siempre se llama dentro de la region critica por lo que el acceso
 // a comp es seguro
-void insert_item(int n, int prioridad) {
+void insert_item(int q, int n, int prioridad) {
   long long creacion = get_timestamp_ms();
   long long caducidad = (rand() % 12 + 1) * 1000;
 
-  // insertamos al final del array actual
-  comp.buffer[comp.tam].num = n;
-  comp.buffer[comp.tam].prioridad = prioridad;
-  comp.buffer[comp.tam].tiempo_creacion = creacion;
-  comp.buffer[comp.tam].tiempo_caducidad = caducidad;
-  comp.tam++; // aumentamos tamaño de la cola
+  comp[q].buffer[comp[q].tam].num = n;
+  comp[q].buffer[comp[q].tam].prioridad = prioridad;
+  comp[q].buffer[comp[q].tam].tiempo_creacion = creacion;
+  comp[q].buffer[comp[q].tam].tiempo_caducidad = caducidad;
+  comp[q].tam++;
 
-  printf("[%lld] [PROD %d] Insertado '%d' (Prioridad %d). Longitud: %d | "
-         "Tiempo de caducidad: %llds\n",
-         get_timestamp_ms(), prioridad, n, prioridad, comp.tam,
-         caducidad / 1000);
+  printf("[%lld] [PROD %d] Insertado '%d'. Longitud: %d | Caducidad: %llds\n",
+         creacion, prioridad, n, comp[q].tam, caducidad / 1000);
 }
 
 // funcion que retira el elemento del principio de la cola FIFO y lo
 // reemplaza por 0
 // siempre se llama dentro de la region critica igual que insert_item
-int remove_item(int *prioridad_extraida, long long *tiempo_creacion_extraido,
-                long long *tiempo_caducidad_extraido) {
-  int mejor_idx = 0;
+int remove_item(int q, int *prioridad_extraida, long long *t_creacion,
+                long long *t_caducidad) {
+  // con 3 colas es FIFO puro, cogemos siempre el de la posicion 0
+  int n = comp[q].buffer[0].num;
+  *prioridad_extraida = comp[q].buffer[0].prioridad;
+  *t_creacion = comp[q].buffer[0].tiempo_creacion;
+  *t_caducidad = comp[q].buffer[0].tiempo_caducidad;
 
-  // buscamos el elemento con mayor prioridad (numero mas bajo)
-  for (int i = 0; i < comp.tam; i++) {
-    if (comp.buffer[i].prioridad ==
-        1) // si el item tiene prioridad 1 salimos del bucle directamente
-    {
-      mejor_idx = i;
-      break;
-    }
-
-    if (comp.buffer[i].prioridad < comp.buffer[mejor_idx].prioridad)
-      mejor_idx = i;
+  // desplazamos a la izquierda
+  for (int i = 0; i < comp[q].tam - 1; i++) {
+    comp[q].buffer[i] = comp[q].buffer[i + 1];
   }
 
-  int n = comp.buffer[mejor_idx].num;
-  *prioridad_extraida = comp.buffer[mejor_idx].prioridad;
-  *tiempo_creacion_extraido = comp.buffer[mejor_idx].tiempo_creacion;
-  *tiempo_caducidad_extraido = comp.buffer[mejor_idx].tiempo_caducidad;
+  comp[q].tam--;
+  comp[q].buffer[comp[q].tam].num = 0;
+  comp[q].buffer[comp[q].tam].prioridad = 0;
 
-  // desplazamos los elementos a la izquierda para eliminar el hueco
-  // mantenemos el orden de los elementos con la misma prioridad
-  for (int i = mejor_idx; i < comp.tam - 1; i++)
-    comp.buffer[i] = comp.buffer[i + 1];
-
-  comp.tam--;                    // reducimos tamaño de la cola
-  comp.buffer[comp.tam].num = 0; // limpiamos por seguridad
-  comp.buffer[comp.tam].prioridad = 0;
-  // fin de la region critica
-
-  printf("[%lld] [CONS] Eliminado '%d' (Prioridad %d). Longitud: %d\n",
-         get_timestamp_ms(), n, *prioridad_extraida, comp.tam);
+  printf("[%lld] [CONS] Extraido '%d' (Prioridad %d). Longitud: %d\n",
+         get_timestamp_ms(), n, *prioridad_extraida, comp[q].tam);
 
   return n;
 }
@@ -334,26 +353,21 @@ int remove_item(int *prioridad_extraida, long long *tiempo_creacion_extraido,
 // funcion que actualiza el suma acumulada del consumidor con el
 // item retirado
 // no accede al buffer compartido
-void consume_item(int item, int prioridad, long long tiempo_creacion_extraido,
-                  long long tiempo_caducidad_extraido, int *sumas) {
+void consume_item(int item, int prioridad, long long t_creacion,
+                  long long t_caducidad, int *sumas) {
   long long tiempo_actual = get_timestamp_ms();
-  long long tiempo_transcurrido = tiempo_actual - tiempo_creacion_extraido;
+  long long tiempo_transcurrido = tiempo_actual - t_creacion;
 
   // si ha pasado mas tiempo que la caducidad esta caducado
-  if (tiempo_transcurrido <= tiempo_caducidad_extraido) {
-    // dormimos el consumidor dependiendo de la prioridad del item
-    if (prioridad == 1)
-      sleep(3);
-    else if (prioridad == 2)
-      sleep(2);
-    else
-      sleep(1);
-
+  if (tiempo_transcurrido <= t_caducidad) {
+    // sleep para controlar la velocidad
+    // 3s prioridad 1
+    // 2s prioridad 2
+    // 1s prioridad 3
+    int t = 4 - prioridad;
     printf("[%lld] [CONS] Procesando '%d' (Prioridad %d). Esperando %ds...\n",
-           get_timestamp_ms(), item, prioridad,
-           prioridad == 1   ? 3
-           : prioridad == 2 ? 2
-                            : 1);
+           get_timestamp_ms(), item, prioridad, t);
+    sleep(t);
 
     // sumamos el entero recibido al acumulador del consumidor
     sumas[prioridad - 1] += item; // suma especifica del fichero

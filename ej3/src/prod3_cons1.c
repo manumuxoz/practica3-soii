@@ -100,7 +100,7 @@ int main(int argc, char **argv) {
   // creamos los hilos
   // preparamos los argumentos para cada hilo en structs separadas
   // si usasemos la misma estructura para los dos hilos tendriamos
-  // una carrera critica sobre count_vocales
+  // una carrera critica
 
   // argumentos productores
   args_hilo args_prod1 = {.ftexto = ftexto1, .id = 1, .suma = 0};

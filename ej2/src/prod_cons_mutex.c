@@ -76,7 +76,7 @@ int main(int argc, char **argv) {
   // creamos los hilos
   // preparamos los argumentos para cada hilo en structs separadas
   // si usasemos la misma estructura para los dos hilos tendriamos
-  // una carrera critica sobre count_vocales
+  // una carrera critica
   args_hilo args_prod = {.ftexto = ftexto};
   args_hilo args_cons = {.ftexto = NULL};
   memset(&args_prod.suma, 0, sizeof(args_prod.suma));
