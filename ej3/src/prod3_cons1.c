@@ -12,8 +12,8 @@
 // compartida para mapear en memoria)
 // empleamos mutexes y variables de condición para solucionar
 // las carreras criticas
-// los items tienen diferentes prioridades dentro de la cola
-// dependiendo de quien los haya producido
+// los items pertenecen a diferentes colas de prioridad dependiendo de quien los
+// haya producido
 
 #define N 10           // tamaño del buffer
 #define NUM_PROD 3     // numero de productores

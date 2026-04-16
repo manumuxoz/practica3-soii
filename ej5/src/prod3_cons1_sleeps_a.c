@@ -12,8 +12,8 @@
 // compartida para mapear en memoria)
 // empleamos mutexes y variables de condición para solucionar
 // las carreras criticas
-// los items tienen diferentes prioridades dentro de la cola
-// dependiendo de quien los haya producido
+// los items pertenecen a diferentes colas de prioridad dependiendo de quien los
+// haya producido
 // los items tienen un tiempo de creacion y caducidad asociado
 // si el tiempo transcurrido es mayor al tiempo de caducidad
 // no se tiene en cuenta para las sumas acumuladas en el consumidor

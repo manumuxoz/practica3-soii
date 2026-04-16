@@ -12,9 +12,9 @@
 // compartida para mapear en memoria)
 // empleamos mutexes y variables de condición para solucionar
 // las carreras criticas
-// los items tienen diferentes prioridades dentro de la cola
-// dependiendo de quien los haya producido
-// los itemes tienen un tiempo de creacion y caducidad asociado
+// los items pertenecen a diferentes colas de prioridad dependiendo de quien los
+// haya producido
+// los items tienen un tiempo de creacion y caducidad asociado
 // si el tiempo transcurrido es mayor al tiempo de caducidad
 // no se tiene en cuenta para las sumas acumuladas en el consumidor
 
@@ -295,17 +295,17 @@ int remove_item(int *prioridad_extraida, long long *tiempo_creacion_extraido,
   int mejor_idx = 0;
 
   // buscamos el elemento con mayor prioridad (numero mas bajo)
-    for (int i = 0; i < comp.tam; i++)
+  for (int i = 0; i < comp.tam; i++) {
+    if (comp.buffer[i].prioridad ==
+        1) // si el item tiene prioridad 1 salimos del bucle directamente
     {
-        if (comp.buffer[i].prioridad == 1) // si el item tiene prioridad 1 salimos del bucle directamente
-        {
-            mejor_idx = i;
-            break;
-        }
-
-        if (comp.buffer[i].prioridad < comp.buffer[mejor_idx].prioridad)
-            mejor_idx = i;
+      mejor_idx = i;
+      break;
     }
+
+    if (comp.buffer[i].prioridad < comp.buffer[mejor_idx].prioridad)
+      mejor_idx = i;
+  }
 
   int n = comp.buffer[mejor_idx].num;
   *prioridad_extraida = comp.buffer[mejor_idx].prioridad;
