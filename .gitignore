@@ -1,0 +1,5 @@
+# ignorar carpetas de binarios de cada ejercicio
+**/bin/
+
+# ignorar archivos objeto
+*.o
