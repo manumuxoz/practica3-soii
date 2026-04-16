@@ -20,7 +20,7 @@
 // los items de las diferentes prioridades se generan en tiempos fijos
 // prioridad 1 cada 7s
 // prioridad 2 cada 5s
-// prioridad 3 cada 3s
+// prioridad 3 cada 1s
 
 #define N 10           // tamaño del buffer
 #define NUM_PROD 3     // numero de productores
@@ -193,14 +193,14 @@ void *hilo_productor(void *arg) {
     //  velocidad fija
     // prioridad 1 cada 7s
     // prioridad 2 cada 5s
-    // prioridad 3 cada 3s
+    // prioridad 3 cada 1s
     int t = 0;
     if (a->id == 1)
       t = 7;
     else if (a->id == 2)
       t = 5;
     else if (a->id == 3)
-      t = 3;
+      t = 1;
     printf("[%lld] [PROD %d] Sleep fijo (Iter %d). Esperando %ds...\n",
            get_timestamp_ms(), a->id, i + 1, t);
     sleep(t);
