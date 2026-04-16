@@ -7,10 +7,14 @@
 #include <time.h>
 #include <sys/time.h>
 
-// productor y consumidor son dos hilos dentro del mismo proceso
+// 3 productores y 1 consumidor son hilos dentro del mismo proceso
 // al compartir el espacio de direcciones la estructura compartida
 // es una variable global (no se necesita un archivo de memoria
 // compartida para mapear en memoria)
+// empleamos mutexes y variables de condición para solucionar
+// las carreras criticas
+// los items tienen diferentes prioridades dentro de la cola
+// dependiendo de quien los haya producido
 
 #define N 10 // tamaño del buffer
 
@@ -284,9 +288,17 @@ int remove_item(int *prioridad_extraida)
     int mejor_idx = 0;
 
     // buscamos el elemento con mayor prioridad (numero mas bajo)
-    for (int i = 1; i < comp.tam; i++)
+    for (int i = 0; i < comp.tam; i++)
+    {
+        if (comp.buffer[i].prioridad == 1) // si el item tiene prioridad 1 salimos del bucle directamente
+        {
+            mejor_idx = i;
+            break;
+        }
+
         if (comp.buffer[i].prioridad < comp.buffer[mejor_idx].prioridad)
             mejor_idx = i;
+    }
     
 
     int n = comp.buffer[mejor_idx].num;

@@ -10,6 +10,8 @@
 // al compartir el espacio de direcciones la estructura compartida
 // es una variable global (no se necesita un archivo de memoria
 // compartida para mapear en memoria)
+// empleamos mutexes y variables de condición para solucionar
+// las carreras criticas
 
 #define N 10 // tamaño del buffer
 
